@@ -91,6 +91,8 @@ import {
   type LucideIcon,
   LockIcon,
   LockOpenIcon,
+  MicIcon,
+  MicOffIcon,
   PenLineIcon,
   XIcon,
 } from "lucide-react";
@@ -111,6 +113,11 @@ import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import {
+  getSpeechRecognitionConstructor,
+  isSpeechRecognitionAvailable,
+  type SpeechRecognitionLike,
+} from "../../lib/webSpeech";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
@@ -801,6 +808,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
   const isMobileViewport = useMediaQuery("max-sm");
   const isComposerCollapsedMobile = isMobileViewport && !isComposerFocused;
 
@@ -820,6 +828,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const mobileComposerExpandReleaseFrameRef = useRef<number | null>(null);
   const mobileComposerExpandInFlightRef = useRef(false);
   const dragDepthRef = useRef(0);
+  const voiceRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const voiceBasePromptRef = useRef("");
+  const voiceFinalTranscriptRef = useRef("");
 
   // ------------------------------------------------------------------
   // Derived: composer send state
@@ -1465,6 +1476,147 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       terminalContextIds: composerTerminalContexts.map((context) => context.id),
     };
   }, [composerCursor, composerTerminalContexts, promptRef]);
+
+  const applyVoicePrompt = useCallback(
+    (nextPrompt: string) => {
+      const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
+      onPromptChange(
+        nextPrompt,
+        nextCursor,
+        expandCollapsedComposerCursor(nextPrompt, nextCursor),
+        false,
+        readComposerSnapshot().terminalContextIds,
+      );
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focusAtEnd();
+      });
+    },
+    [onPromptChange, readComposerSnapshot],
+  );
+
+  const mergeVoicePrompt = useCallback((basePrompt: string, transcript: string) => {
+    const trimmedTranscript = transcript.trim();
+    if (!trimmedTranscript) {
+      return basePrompt;
+    }
+    return `${basePrompt}${basePrompt.endsWith(" ") || basePrompt.length === 0 ? "" : " "}${trimmedTranscript}`;
+  }, []);
+
+  const mergeSpeechTranscriptChunks = useCallback((chunks: ReadonlyArray<string>) => {
+    const normalizedChunks = chunks.map((chunk) => chunk.trim()).filter(Boolean);
+    const chunkWordCounts = normalizedChunks.map((chunk) => chunk.split(/\s+/).length);
+    const looksLikeRollingHypothesis =
+      normalizedChunks.length >= 3 &&
+      chunkWordCounts.every((wordCount, index) => index === 0 || wordCount >= chunkWordCounts[index - 1]!);
+
+    if (looksLikeRollingHypothesis) {
+      return normalizedChunks.at(-1) ?? "";
+    }
+
+    let mergedTranscript = "";
+
+    for (const chunk of normalizedChunks) {
+      if (!mergedTranscript) {
+        mergedTranscript = chunk;
+        continue;
+      }
+
+      if (chunk.startsWith(mergedTranscript)) {
+        mergedTranscript = chunk;
+        continue;
+      }
+
+      if (mergedTranscript.startsWith(chunk)) {
+        continue;
+      }
+
+      const mergedWords = mergedTranscript.split(/\s+/);
+      const chunkWords = chunk.split(/\s+/);
+      let overlap = 0;
+      const maxOverlap = Math.min(mergedWords.length, chunkWords.length);
+
+      for (let size = maxOverlap; size > 0; size -= 1) {
+        const mergedTail = mergedWords.slice(-size).join(" ").toLowerCase();
+        const chunkHead = chunkWords.slice(0, size).join(" ").toLowerCase();
+        if (mergedTail === chunkHead) {
+          overlap = size;
+          break;
+        }
+      }
+
+      mergedTranscript = [...mergedWords, ...chunkWords.slice(overlap)].join(" ");
+    }
+
+    return mergedTranscript;
+  }, []);
+
+  const toggleVoiceInput = useCallback(() => {
+    if (isVoiceListening) {
+      voiceRecognitionRef.current?.stop();
+      setIsVoiceListening(false);
+      return;
+    }
+
+    const Recognition = getSpeechRecognitionConstructor();
+    if (!Recognition) {
+      toastManager.add({
+        type: "error",
+        title: "Speech input is not available in this browser",
+        description: "Try your phone keyboard microphone or a browser with Web Speech support.",
+      });
+      return;
+    }
+
+    const snapshot = readComposerSnapshot();
+    voiceBasePromptRef.current = snapshot.value;
+    voiceFinalTranscriptRef.current = "";
+
+    const recognition = new Recognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognition.onresult = (event) => {
+      const finalChunks: string[] = [];
+      const interimChunks: string[] = [];
+
+      for (let index = 0; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (!result) {
+          continue;
+        }
+        if (result.isFinal) {
+          finalChunks.push(result[0].transcript);
+        } else {
+          interimChunks.push(result[0].transcript);
+        }
+      }
+
+      const finalTranscript = mergeSpeechTranscriptChunks(finalChunks);
+      const interimTranscript = mergeSpeechTranscriptChunks(interimChunks);
+      voiceFinalTranscriptRef.current = finalTranscript;
+      applyVoicePrompt(
+        mergeVoicePrompt(voiceBasePromptRef.current, `${finalTranscript} ${interimTranscript}`),
+      );
+    };
+    recognition.addEventListener("end", () => setIsVoiceListening(false));
+    recognition.addEventListener("error", () => setIsVoiceListening(false));
+    voiceRecognitionRef.current = recognition;
+    recognition.start();
+    setIsVoiceListening(true);
+  }, [
+    applyVoicePrompt,
+    isVoiceListening,
+    mergeSpeechTranscriptChunks,
+    mergeVoicePrompt,
+    readComposerSnapshot,
+  ]);
+
+  useEffect(
+    () => () => {
+      voiceRecognitionRef.current?.abort();
+    },
+    [],
+  );
 
   const resolveActiveComposerTrigger = useCallback((): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
@@ -2390,6 +2542,30 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 }
                 className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
               >
+                <Button
+                  type="button"
+                  size={isComposerPrimaryActionsCompact ? "icon-xs" : "sm"}
+                  variant={isVoiceListening ? "default" : "outline"}
+                  disabled={!isSpeechRecognitionAvailable() || environmentUnavailable !== null}
+                  onClick={toggleVoiceInput}
+                  title={
+                    isVoiceListening
+                      ? "Stop voice input"
+                      : "Dictate into the composer using this browser's speech recognition"
+                  }
+                  aria-label={isVoiceListening ? "Stop voice input" : "Start voice input"}
+                >
+                  {isVoiceListening ? (
+                    <MicOffIcon className="size-4" />
+                  ) : (
+                    <MicIcon className="size-4" />
+                  )}
+                  {isComposerPrimaryActionsCompact ? null : (
+                    <span className="hidden sm:inline">
+                      {isVoiceListening ? "Listening" : "Talk"}
+                    </span>
+                  )}
+                </Button>
                 <ComposerFooterPrimaryActions
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}

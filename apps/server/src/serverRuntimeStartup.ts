@@ -34,10 +34,12 @@ import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
 import {
+  buildPairingUrl,
   formatHeadlessServeOutput,
   formatHostForUrl,
   isWildcardHost,
   issueHeadlessServeAccessInfo,
+  renderTerminalQrCode,
 } from "./startupAccess.ts";
 
 export class ServerRuntimeStartupError extends Data.TaggedError("ServerRuntimeStartupError")<{
@@ -255,6 +257,47 @@ const resolveStartupBrowserTarget = Effect.gen(function* () {
   );
 });
 
+const getStartupPairingLabels = (): ReadonlyArray<string> => {
+  const rawLabels = process.env.T3CODE_STARTUP_PAIRING_LABELS;
+  if (!rawLabels) {
+    return [];
+  }
+
+  return rawLabels
+    .split(",")
+    .map((label) => label.trim())
+    .filter((label) => label.length > 0);
+};
+
+const formatStartupPairingLinks = (links: ReadonlyArray<readonly [string, string]>): string =>
+  [
+    "Additional one-time pairing links:",
+    ...links.map(([label, url]) => `  ${label}: ${url}`),
+    "",
+    links[0] ? `Scan ${links[0][0]} to pair this device:` : "",
+    links[0] ? renderTerminalQrCode(links[0][1]) : "",
+    "",
+  ].join("\n");
+
+const issueLabeledStartupPairingLinks = (baseTarget: string) =>
+  Effect.gen(function* () {
+    const labels = getStartupPairingLabels();
+    if (labels.length === 0) {
+      return;
+    }
+
+    const serverAuth = yield* ServerAuth;
+    const links = yield* Effect.all(
+      labels.map((label) =>
+        serverAuth.issuePairingCredential({ role: "owner", label }).pipe(
+          Effect.map((issued) => [label, buildPairingUrl(baseTarget, issued.credential)] as const),
+        ),
+      ),
+    );
+
+    yield* Console.log(formatStartupPairingLinks(links));
+  });
+
 const maybeOpenBrowser = (target: string) =>
   Effect.gen(function* () {
     const serverConfig = yield* ServerConfig;
@@ -444,6 +487,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
           yield* Effect.logInfo(
             "Authentication required. Open T3 Code using the pairing URL.",
           ).pipe(Effect.annotateLogs({ pairingUrl: startupBrowserTarget }));
+          yield* issueLabeledStartupPairingLinks(startupBrowserTarget);
         }
         yield* runStartupPhase("browser.open", maybeOpenBrowser(startupBrowserTarget));
       }

@@ -31,6 +31,8 @@ import {
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
+  Volume2Icon,
+  VolumeXIcon,
   WrenchIcon,
   ZapIcon,
 } from "lucide-react";
@@ -59,6 +61,8 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
+import { isSpeechSynthesisAvailable, speakText, stopSpeech } from "../../lib/webSpeech";
+import { toastManager } from "../ui/toast";
 
 import {
   buildInlineTerminalContextText,
@@ -444,10 +448,50 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               )
             )}
           </p>
+          <AssistantSpeechButtons text={messageText} />
           <AssistantCopyButton row={row} />
         </div>
       </div>
     </>
+  );
+}
+
+function AssistantSpeechButtons({ text }: { text: string }) {
+  const handleSpeak = useCallback(() => {
+    const result = speakText(text);
+    if (!result.ok) {
+      toastManager.add({
+        type: "error",
+        title: "Could not read aloud",
+        description: result.message,
+      });
+    }
+  }, [text]);
+
+  return (
+    <div className="flex items-center gap-1">
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={!isSpeechSynthesisAvailable()}
+        onClick={handleSpeak}
+        title="Read this response aloud"
+        aria-label="Read assistant response aloud"
+      >
+        <Volume2Icon className="size-3" />
+      </Button>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        onClick={stopSpeech}
+        title="Stop reading aloud"
+        aria-label="Stop reading aloud"
+      >
+        <VolumeXIcon className="size-3" />
+      </Button>
+    </div>
   );
 }
 
