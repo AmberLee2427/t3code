@@ -37,6 +37,7 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
@@ -61,7 +62,12 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
-import { isSpeechSynthesisAvailable, speakText, stopSpeech } from "../../lib/webSpeech";
+import {
+  isSpeechSynthesisAvailable,
+  speakText,
+  stopSpeech,
+  useSpeechSynthesisVoicePreference,
+} from "../../lib/webSpeech";
 import { toastManager } from "../ui/toast";
 
 import {
@@ -457,8 +463,18 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
 }
 
 function AssistantSpeechButtons({ text }: { text: string }) {
+  const { preferredVoiceUri, setPreferredVoiceUri, selectedVoiceLabel, voiceOptions } =
+    useSpeechSynthesisVoicePreference();
+  const voiceSelectItems = useMemo(
+    () => [
+      { value: "__auto__", label: "Auto voice" },
+      ...voiceOptions.map((voice) => ({ value: voice.voiceURI, label: voice.label })),
+    ],
+    [voiceOptions],
+  );
+
   const handleSpeak = useCallback(() => {
-    const result = speakText(text);
+    const result = speakText(text, { preferredVoiceUri });
     if (!result.ok) {
       toastManager.add({
         type: "error",
@@ -466,7 +482,7 @@ function AssistantSpeechButtons({ text }: { text: string }) {
         description: result.message,
       });
     }
-  }, [text]);
+  }, [preferredVoiceUri, text]);
 
   return (
     <div className="flex items-center gap-1">
@@ -476,11 +492,35 @@ function AssistantSpeechButtons({ text }: { text: string }) {
         variant="outline"
         disabled={!isSpeechSynthesisAvailable()}
         onClick={handleSpeak}
-        title="Read this response aloud"
+        title={selectedVoiceLabel ? `Read this response aloud with ${selectedVoiceLabel}` : "Read this response aloud"}
         aria-label="Read assistant response aloud"
       >
         <Volume2Icon className="size-3" />
       </Button>
+      {voiceOptions.length > 0 ? (
+        <Select
+          modal={false}
+          value={preferredVoiceUri ?? "__auto__"}
+          onValueChange={(value) => setPreferredVoiceUri(value === "__auto__" ? null : value)}
+          items={voiceSelectItems}
+        >
+          <SelectTrigger
+            size="xs"
+            className="h-6 max-w-44 min-w-24 rounded-md border-border/50 bg-background/35 px-2 text-[10px] shadow-none"
+            aria-label="Speech voice"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup popupClassName="max-w-80">
+            <SelectItem value="__auto__">Auto voice</SelectItem>
+            {voiceOptions.map((voice) => (
+              <SelectItem key={voice.voiceURI} value={voice.voiceURI}>
+                {voice.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      ) : null}
       <Button
         type="button"
         size="xs"
