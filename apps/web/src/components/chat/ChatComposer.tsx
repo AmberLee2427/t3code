@@ -1567,6 +1567,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return;
     }
 
+    if (
+      typeof window !== "undefined" &&
+      !window.isSecureContext &&
+      window.location.hostname !== "localhost" &&
+      window.location.hostname !== "127.0.0.1"
+    ) {
+      toastManager.add({
+        type: "error",
+        title: "Speech input needs a secure page in Chrome",
+        description:
+          "Use HTTPS or open T3 Code on localhost. Chrome blocks microphone speech recognition on plain HTTP LAN URLs.",
+      });
+      return;
+    }
+
     const snapshot = readComposerSnapshot();
     voiceBasePromptRef.current = snapshot.value;
     voiceFinalTranscriptRef.current = "";
@@ -1599,10 +1614,44 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
     };
     recognition.addEventListener("end", () => setIsVoiceListening(false));
-    recognition.addEventListener("error", () => setIsVoiceListening(false));
+    recognition.addEventListener("error", (event: Event) => {
+      setIsVoiceListening(false);
+      const speechError = (event as Event & { error?: string; message?: string }).error;
+      const speechMessage = (event as Event & { error?: string; message?: string }).message;
+
+      const description =
+        speechError === "not-allowed" || speechError === "service-not-allowed"
+          ? "Microphone permission was denied. Allow microphone access for this site in Chrome settings."
+          : speechError === "audio-capture"
+            ? "No microphone input was available. Check your system input device and browser microphone permission."
+            : speechError === "network"
+              ? "Speech recognition network request failed. If you are on an HTTP LAN URL, open localhost or HTTPS instead."
+              : speechMessage && speechMessage.trim().length > 0
+                ? speechMessage
+                : "Speech recognition stopped unexpectedly. Try again or use your keyboard microphone as fallback.";
+
+      toastManager.add({
+        type: "error",
+        title: "Could not start voice input",
+        description,
+      });
+    });
     voiceRecognitionRef.current = recognition;
-    recognition.start();
-    setIsVoiceListening(true);
+
+    try {
+      recognition.start();
+      setIsVoiceListening(true);
+    } catch (error) {
+      setIsVoiceListening(false);
+      toastManager.add({
+        type: "error",
+        title: "Could not start voice input",
+        description:
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : "Speech recognition failed to start.",
+      });
+    }
   }, [
     applyVoicePrompt,
     isVoiceListening,

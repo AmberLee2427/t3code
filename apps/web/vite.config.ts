@@ -92,6 +92,7 @@ export default defineConfig({
     host,
     port,
     strictPort: true,
+    allowedHosts: ["localhost", "localhost.", "127.0.0.1"],
     ...(devProxyTarget
       ? {
           proxy: {
